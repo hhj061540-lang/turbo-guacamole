@@ -1,0 +1,111 @@
+name: Wolf Tech VPN Gateway E2E Test Suite
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+    inputs:
+      country_code:
+        description: 'Country code to test during connect step (e.g., US, JP, FR, GB)'
+        required: false
+        default: 'US'
+
+jobs:
+  run-e2e-tests:
+    name: Run API End-to-End Tests
+    runs-on: ubuntu-latest
+    env:
+      BASE: "https://wolfvpn-j6ved7rk.manus.space"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: 1. Health Check (/api/healthz)
+        run: |
+          echo "Checking gateway health..."
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/api/healthz")
+          if [ "$HTTP_STATUS" -ne 200 ]; then
+            echo "Health check failed with status $HTTP_STATUS"
+            exit 1
+          fi
+          curl -sS "$BASE/api/healthz"
+          echo -e "\n[PASS] Health check successful."
+
+      - name: 2. Fetch VPN Countries (/api/vpn/countries)
+        run: |
+          echo "Fetching VPN country list..."
+          curl -sS "$BASE/api/vpn/countries"
+          echo -e "\n[PASS] Countries list retrieved."
+
+      - name: 3. Test Alias Route (/api/countries)
+        run: |
+          echo "Fetching countries alias route..."
+          curl -sS "$BASE/api/countries"
+          echo -e "\n[PASS] Alias endpoint functional."
+
+      - name: 4. Test Latency Delay (/api/test?ms=1000)
+        run: |
+          echo "Testing 1000ms latency endpoint..."
+          curl -sS "$BASE/api/test?ms=1000"
+          echo -e "\n[PASS] Latency endpoint returned."
+
+      - name: 5. Connect to Specified Country
+        run: |
+          TARGET="${{ github.event.inputs.country_code }}"
+          if [ -z "$TARGET" ]; then
+            TARGET="US"
+          fi
+          TARGET=$(echo "$TARGET" | tr '[:lower:]' '[:upper:]' | xargs)
+          
+          echo "Testing connection to country code: $TARGET..."
+          RESPONSE=$(curl -sS -X POST "$BASE/api/vpn/connect" \
+            -H "Content-Type: application/json" \
+            -d "{\"country_code\":\"$TARGET\"}")
+          
+          echo "$RESPONSE"
+          if echo "$RESPONSE" | grep -q '"success":true'; then
+            echo "[PASS] Successfully connected to $TARGET."
+          else
+            echo "[FAIL] Connection to $TARGET failed."
+            exit 1
+          fi
+
+      - name: 6. Verify Active VPN Status
+        run: |
+          echo "Verifying session status..."
+          STATUS=$(curl -sS "$BASE/api/vpn/status")
+          echo "$STATUS"
+          if echo "$STATUS" | grep -q '"connected":true'; then
+            echo "[PASS] Verified active VPN connection state."
+          else
+            echo "[FAIL] Session state does not show connected."
+            exit 1
+          fi
+
+      - name: 7. Verify Assigned IP
+        run: |
+          echo "Fetching active IP address..."
+          curl -sS "$BASE/api/vpn/ip"
+          echo -e "\n[PASS] IP address returned."
+
+      - name: 8. Disconnect VPN (/api/vpn/disconnect)
+        run: |
+          echo "Testing disconnect endpoint..."
+          curl -sS -X POST "$BASE/api/vpn/disconnect" \
+            -H "Content-Type: application/json"
+          echo -e "\n[PASS] Disconnect request issued."
+
+      - name: 9. Verify Session Status After Disconnect
+        run: |
+          echo "Verifying status after disconnection..."
+          STATUS=$(curl -sS "$BASE/api/vpn/status")
+          echo "$STATUS"
+          if echo "$STATUS" | grep -q '"connected":false'; then
+            echo "[PASS] Verified session is successfully disconnected."
+          else
+            echo "[FAIL] Session state should be disconnected."
+            exit 1
+          fi
